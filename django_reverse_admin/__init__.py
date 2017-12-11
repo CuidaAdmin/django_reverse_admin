@@ -152,99 +152,18 @@ class ReverseModelAdmin(ModelAdmin):
                 inline_instances.append(inline)
                 self.exclude.append(name)
         self.tmp_inline_instances = inline_instances
-
+        
     def get_inline_instances(self, request, obj=None):
         return self.tmp_inline_instances + super(ReverseModelAdmin, self).get_inline_instances(request, obj)
 
-    def change_view(self, request, object_id, form_url='', extra_context=None):
-        return self.changeform_view(request, object_id, form_url, extra_context)
-
-    def add_view(self, request, form_url='', extra_context=None):
-        "The 'add' admin view for this model."
-        model = self.model
-        opts = model._meta
-        if not self.has_add_permission(request):
-            raise PermissionDenied
-
-        model_form = self.get_form(request)
-        formsets = []
-        if request.method == 'POST':
-            form = model_form(request.POST, request.FILES)
-            if form.is_valid():
-                form_validated = True
-                new_object = self.save_form(request, form, change=False)
-            else:
-                form_validated = False
-                new_object = self.model()
-            prefixes = {}
-            for FormSet, inline in self.get_formsets_with_inlines(request):
-                prefix = FormSet.get_default_prefix()
-                prefixes[prefix] = prefixes.get(prefix, 0) + 1
-                if prefixes[prefix] != 1:
-                    prefix = "%s-%s" % (prefix, prefixes[prefix])
-                formset = FormSet(data=request.POST, files=request.FILES,
-                                  instance=new_object,
-                                  save_as_new="_saveasnew" in request.POST,
-                                  prefix=prefix)
-                formsets.append(formset)
-            if all_valid(formsets) and form_validated:
-                # Here is the modified code.
-                for formset, inline in zip(formsets, self.get_inline_instances(request)):
-                    if not isinstance(inline, ReverseInlineModelAdmin):
-                        continue
-                    saved = formset.save()
-                    if saved:
-                        obj = saved[0]
-                        setattr(new_object, inline.parent_fk_name, obj)
-                self.save_model(request, new_object, form, change=False)
-                form.save_m2m()
-                for formset in formsets:
-                    self.save_formset(request, form, formset, change=False)
-
-                #self.log_addition(request, new_object)
-                return self.response_add(request, new_object)
-        else:
-            # Prepare the dict of initial data from the request.
-            # We have to special-case M2Ms as a list of comma-separated PKs.
-            initial = dict(request.GET.items())
-            for k in initial:
-                try:
-                    f = opts.get_field(k)
-                except models.FieldDoesNotExist:
-                    continue
-                if isinstance(f, models.ManyToManyField):
-                    initial[k] = initial[k].split(",")
-            form = model_form(initial=initial)
-            prefixes = {}
-            for FormSet, inline in self.get_formsets_with_inlines(request):
-                prefix = FormSet.get_default_prefix()
-                prefixes[prefix] = prefixes.get(prefix, 0) + 1
-                if prefixes[prefix] != 1:
-                    prefix = "%s-%s" % (prefix, prefixes[prefix])
-                formset = FormSet(instance=self.model(), prefix=prefix)
-                formsets.append(formset)
-
-        adminForm = helpers.AdminForm(form, list(self.get_fieldsets(request)), self.prepopulated_fields)
-        media = self.media + adminForm.media
-
-        inline_admin_formsets = []
-        for inline, formset in zip(self.get_inline_instances(request), formsets):
-            fieldsets = list(inline.get_fieldsets(request))
-            inline_admin_formset = helpers.InlineAdminFormSet(inline, formset, fieldsets)
-            inline_admin_formsets.append(inline_admin_formset)
-            media = media + inline_admin_formset.media
-
-        context = {
-            'title': _('Add %s') % force_text(opts.verbose_name),
-            'adminform': adminForm,
-            #'is_popup': '_popup' in request.REQUEST,
-            'is_popup': False,
-            'show_delete': False,
-            'media': mark_safe(media),
-            'inline_admin_formsets': inline_admin_formsets,
-            'errors': helpers.AdminErrorList(form, formsets),
-            #'root_path': self.admin_site.root_path,
-            'app_label': opts.app_label,
-        }
-        context.update(extra_context or {})
-        return self.render_change_form(request, context, form_url=form_url, add=True)
+    def save_related(self, request, form, formsets, change):
+        res = super(ReverseModelAdmin, self).save_related(request, form, formsets, change)
+        for inline_instance in self.tmp_inline_instances:
+            for formset in formsets:
+                if formset.model == inline_instance.model:
+                    if formset.forms[0].instance != getattr(form.instance, formset.parent_fk_name):
+                        formset.forms[0].instance.save()
+                        setattr(form.instance, formset.parent_fk_name, formset.forms[0].instance)
+                        form.instance.save()
+                    break
+        return res
